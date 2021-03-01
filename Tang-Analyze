@@ -1,0 +1,218 @@
+
+"""
+
+@author: Eric Tang
+"""
+import os
+from pathlib import Path                  # NOTE: 'exit' was added to batch EOF
+from xlwt import Workbook
+
+outputFile = "global placeholder"
+apkFileList = [] # stores apk files
+errorList = [0, 0, 0] # 0 - http, 1 - cert, 2- handler
+permList = [0, 0, 0] # 0 - location, 1 - phone, 2 - sms
+dangerousPermissions = 0
+backdebug = [0, 0]
+
+
+# dangerous permission combination lists
+locationList = ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]
+phoneList = ["INTERNET", "READ_PHONE_STATE", "ACCESS_NETWORK_STATE", "VIBRATE"]
+smsList = ["SEND_SMS", "RECEIVE_SMS", "READ_SMS", "WRITE_SMS", "CALL_PHONE"]
+
+# for use to put into spreadsheet, dataList is 2d array full of curData
+dataList = []
+
+# reads in the manifest and determines what each line is
+def androidManifest(lines): 
+    locDanger = True
+    phoneDanger = True
+    smsDanger = True
+    
+    packagePath = ""
+    permissions = []
+    for line in lines: 
+        if "debuggable=\"true\"" in line:
+            backdebug[1] = backdebug[1] + 1
+            curData[6] = 1
+        if "allowBackup=\"true\"" in line:
+            backdebug[0] = backdebug[0] + 1
+            curData[7] = 1
+        
+        if "uses-permission" in line:
+            line = line.replace("android:", "")     # formatting for output.txt
+            line = line.replace("<uses-permission ","")
+            line = line.replace("name=\"","")
+            line = line.replace("android.permission.","")
+            line = line.replace("\"/>","")
+            permissions.append(line)
+        
+        elif "package" in line:
+            index = line.find("package")
+            line = line[index:]
+            packagePath = line
+            
+    # writes permissions to output file
+    if permissions:
+        outputFile.write("Permissions Used: \n")
+        allPermissions = ""
+        for element in permissions:
+            outputFile.write(element)
+            allPermissions = allPermissions + element
+            
+            
+        # check permission sets here
+        for permission in locationList:
+            if permission not in allPermissions:
+                locDanger = False
+                
+        for permission in phoneList:
+            if permission not in allPermissions:
+                phoneDanger = False
+                
+        for permission in smsList:
+            if permission not in allPermissions:
+                smsDanger = False
+            
+        # writes to output file if dangerous permission set found
+        if (locDanger):
+            outputFile.write("Dangerous Permission Set: Location \n")
+            permList[0] = permList[0] + 1
+            curData[3] = curData[3] + 1
+        if (phoneDanger):
+            outputFile.write("Dangerous Permission Set: Phone \n")
+            permList[1] = permList[1] + 1
+            curData[4] = curData[4] + 1
+        if (smsDanger):
+            outputFile.write("Dangerous Permission Set: SMS \n")
+            permList[2] = permList[2] + 1
+            curData[5] = curData[5] + 1
+            
+            
+            
+    outputFile.write("******************************************\n")
+    return packagePath;
+
+
+# analyze the code within the package's folder and finds vulnerabilities
+def analysis(filePath, packagePath, error):  # package path for finding error location
+    error = error
+    try:
+        for file in os.listdir(filePath):
+            if ("R$" in file):
+                continue
+            fileCheck = filePath+"\\"+file
+            if not (os.path.isfile(fileCheck)):
+                error = analysis(fileCheck, packagePath + "\\"+file, error)
+            else:
+                fileOpen = Path(filePath) / file
+                androidCode = open(fileOpen, "r")
+                lineNumber = 1
+                for line in androidCode.readlines():
+                    # print(filePath + str(lineNumber)) # debug
+                    if "http:" in line and "https:" not in line:
+                        outputFile.write("httpError?: " + packagePath + "\\"+file + " Line " + str(lineNumber) + "\n")
+                        error = error + 1
+                        errorList[0] = errorList[0] + 1
+                        curData[0] = curData[0] + 1
+                    if "trust" in line:
+                        outputFile.write("TrustedCert?: " + packagePath + "\\"+file + " Line " + str(lineNumber)+ "\n")
+                        error = error + 1
+                        errorList[1] = errorList[1] + 1
+                        curData[1] = curData[1] + 1
+                    if "ErrorHandler;->proceed()" in line:
+                        outputFile.write("ErrorHandler?: " + packagePath + "\\"+file + " Line " + str(lineNumber)+ "\n")
+                        error = error + 1
+                        errorList[2] = errorList[2] + 1
+                        curData[2] = curData[2] + 1
+                    lineNumber = lineNumber + 1
+        return error;
+    except:
+        return 0
+
+#____________Main Method Start________________
+    
+
+apkFile = ""
+
+
+filePath = os.path.dirname(os.path.realpath(__file__))
+for file in os.listdir(filePath):
+    if (file != "Tang-analyze.py" and file != "apktool.bat" and file != "apktool.jar"):     # removes file name from list
+        apkFileList.append(file)
+
+outputFile = open("RESULTS.txt", "w")
+for file in apkFileList:
+    curData = [0,0,0,0,0,0,0,0] # 0-http, 1-cert, 2-handler, 3-loc, 4-phone, 5-sms, 6-debug, 7-backup
+    apkFile = file
+    txt = open(apkFile, "r")
+    os.system('cmd /K %s' % ("apktool d " + apkFile))
+
+    outputFile.write("\n\n______________________________________________\n")
+    outputFile.write("\n" + file + "\n")
+
+
+    # searches for the path of the deconstructed app folder
+    searchFile = apkFile.replace(".apk", "")
+    filePath = os.path.dirname(os.path.realpath(__file__))
+    filePath = os.path.join(filePath, searchFile)
+
+    PackPath = "" # package path
+    # reads in each file from the deconstructed app folder, looks for manifest
+    for file in os.listdir(searchFile):
+        if ("AndroidManifest.xml" in file):
+            fileOpen = Path(filePath) / file
+            manifest = open(fileOpen, "r")
+            try:
+                PackPath = androidManifest(manifest.readlines())
+                PackPath = PackPath[PackPath.find("\"") + 1:].split("\"")[0]
+            except:
+                continue
+        
+
+    # reads in each file from the main package
+    filePath = filePath + "\\smali\\" + PackPath.replace(".","\\")
+    outputFile.write("Possible Vulnerabilities: " + "\n")
+    outputFile.write("Vulnerabilities found: " + str(analysis(filePath, PackPath.replace(".","\\"), 0)))
+    dataList.append(curData)
+
+outputFile.write("\n~~~~~~~RESULTS FROM ALL APPS~~~~~~~\n")
+outputFile.write("TOTAL APPS ANALYZED: " + str(len(apkFileList)) + "\n")
+outputFile.write("httpErrors: " + str(errorList[0]) + "\n")
+outputFile.write("trustedCerts: " + str(errorList[1]) + "\n")
+outputFile.write("errorHandlers: " + str(errorList[2]) + "\n")
+outputFile.write("debugTrue: " + str(backdebug[1]) + "\n")
+outputFile.write("allowBackup: " + str(backdebug[0]) + "\n")
+outputFile.write("~~Dangerous Permission Sets~~" + "\n")
+outputFile.write("Location: " + str(permList[0]) + "\n")
+outputFile.write("Phone: " + str(permList[1]) + "\n")
+outputFile.write("SMS: " + str(permList[2]) + "\n")
+
+
+
+# writing data points to excel sheet
+wb = Workbook()
+dataSheet = wb.add_sheet('DATA')
+dataSheet.write(0,0, 'APK')
+dataSheet.write(0,1, 'httpErrors')
+dataSheet.write(0,2, 'certErrors')
+dataSheet.write(0,3, 'errorHandler')
+dataSheet.write(0,4, 'locationVuln')
+dataSheet.write(0,5, 'phoneVuln')
+dataSheet.write(0,6, 'smsVuln')
+dataSheet.write(0,7, 'debugTrue')
+dataSheet.write(0,8, 'backupTrue')
+
+rowCell = 1
+for file in apkFileList:
+    colCell = 1
+    dataSheet.write(rowCell, 0, file)
+    for num in dataList[rowCell - 1]:
+        dataSheet.write(rowCell, colCell, str(num))
+        colCell = colCell + 1
+    rowCell = rowCell + 1
+
+wb.save('Data.xls')
+
+
+outputFile.close()
